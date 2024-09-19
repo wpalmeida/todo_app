@@ -13,21 +13,19 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
+# Install dependencies
 COPY requirements.txt /app/
-
-# Install Python dependencies
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
 # Copy the rest of the application code into the container
 COPY . /app/
 
-# Expose the port Flask is running on
-EXPOSE 5000
+# Expose the port Gunicorn will run on
+EXPOSE 8000
 
-# Define environment variable for Flask
+# Define environment variable for Flask (optional)
 ENV FLASK_APP=app.py
 
-# Command to run the Flask app
-CMD ["flask", "run"]
+# Command to run the Flask app with Gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app:app"]
