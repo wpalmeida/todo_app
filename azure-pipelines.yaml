@@ -1,0 +1,103 @@
+trigger:
+  branches:
+    include:
+    - dev
+    - master
+  paths:
+    include:
+      - '*'
+    exclude:
+    - README.md
+    - azure-pipelines.yaml
+
+variables:
+- ${{ if eq(variables['Build.SourceBranchName'], 'dev') }}: 
+  - group: groupVarDev
+  - name: imageRepository
+    value: '$(IMAGE-REPOSITORY)'
+  - name: owaspTargetURL
+    value: $(OWASP_TARGE_URL-dev)
+- ${{ if eq(variables['Build.SourceBranchName'], 'master') }}: 
+  - group: groupVarMaster
+  - name: imageRepository
+    value: '$(IMAGE-REPOSITORY)'
+  - name: owaspTargetURL
+    value: $(OWASP_TARGE_URL-master)
+- group: groupVarShared
+- name: path-k8s
+  value: $(HELM-PATH-K8S)
+- name: dockerfilePath
+  value: '$(Build.SourcesDirectory)/Dockerfile'
+- name: tag
+  value: '$(Build.BuildId)'
+- name: taglatest
+  value: 'latest'
+
+pool: tallerselfhosted
+
+stages:
+- stage: SonarQube
+  displayName: SonarQube
+  condition: eq(variables['Build.SourceBranchName'], 'master')
+  jobs:
+  - job: SonarQube
+    displayName: SonarQube
+    steps:
+    - task: SonarQubePrepare@5
+      inputs:
+        SonarQube: '$(SONARQUBE-SERVICE-CONNECTION)'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: '$(SONARQUBE-CLI-PROJECT-KEY)'
+        cliSources: '.'
+    - task: SonarQubeAnalyze@5
+      inputs:
+        jdkversion: 'JAVA_HOME_11_X64'
+    - task: SonarQubePublish@5
+      inputs:
+        pollingTimeoutSec: '300'
+
+- stage: BuildAndPush
+  displayName: BuildAndPush
+  dependsOn: []
+  jobs:
+  - job: BuildAndPush
+    displayName: Build
+    steps:    
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)_$(Build.SourceBranchName)
+    - task: SnykSecurityScan@1
+      inputs:
+        serviceConnectionEndpoint: '$(SNYK-SERVICE-CONNECTION)'
+        testType: 'container'
+        dockerImageName: '$(containerRegistry)/$(imageRepository):$(tag)_$(Build.SourceBranchName)'
+        dockerfilePath: $(dockerfilePath)
+        monitorWhen: 'always'
+        failOnIssues: false
+
+- stage: ArgoCD
+  jobs:
+  - job: DeployArgoCD
+    steps:
+    - task: CmdLine@2
+      inputs:
+        script: |
+          git clone --single-branch --branch master https://$(repo-user):$(repo-password)@dev.azure.com/TallerInternTools/Snapshot%20Exploration/_git/taller-ttit-kubernetes
+          cd $(path-k8s)
+          sed -i 's/\(tag: \).*/\1"$(tag)_$(Build.SourceBranchName)"/g' $(values)
+          cat $(values)
+          cd ../
+          git config --global user.email "svc-devops@cloudazuretallertechnologie.onmicrosoft.com"
+          git config --global user.name "svc-devops"
+          git add .
+          git commit -m "update tag: $(tag)_$(Build.SourceBranchName)"
+          git push origin master
+          rm -r /home/taller/taller-ttit-kubernetes
+        workingDirectory: '/home/taller'
